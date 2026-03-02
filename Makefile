@@ -14,11 +14,11 @@ $(TARGET): $(SOURCES)
 	$(CC) $(SOURCES) -o $(TARGET) $(CFLAGS) $(LDFLAGS)
 
 install: $(TARGET)
-	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 0755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
+	install -d $(DESTDIR)$(PREFIX)/sbin
+	install -m 0755 $(TARGET) $(DESTDIR)$(PREFIX)/sbin/
 
 clean:
 	rm -f $(TARGET)
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET)
+	rm -f $(DESTDIR)$(PREFIX)/sbin/$(TARGET)
