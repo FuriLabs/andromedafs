@@ -1,0 +1,16 @@
+Source: andromedafs
+Maintainer: Bardia Moshiri <bardia@furilabs.com>
+Section: misc
+Priority: optional
+Build-Depends: debhelper-compat (= 13),
+               gcc,
+               pkg-config,
+               libfuse3-dev
+Standards-Version: 4.7.2
+Vcs-Browser: https://github.com/furilabs/andromedafs
+Vcs-Git: https://github.com/furilabs/andromedafs.git
+
+Package: andromedafs
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends},
+Description: FUSE filesystem for two way Andromeda file access
