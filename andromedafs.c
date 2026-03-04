@@ -92,6 +92,59 @@ is_android_caller(void)
     return 0;
 }
 
+static int
+is_write_allowed_for_caller(void)
+{
+    const struct fuse_context *ctx;
+    int android;
+
+    ctx = fuse_get_context();
+    if (!ctx)
+        return 0;
+
+    android = is_android_caller();
+
+    /* host disk being exported into Android: only Android may write via this view. */
+    if (g_cfg.disk_side == DISK_SIDE_HOST)
+        return android ? 1 : 0;
+
+    /* Android/guest disk being exported into host: only host may write via this view. */
+    if (android)
+        return 0;
+
+    /* host-side caller: restrict to specified host_uid */
+    if (ctx->uid == 0)
+        return 1;
+
+    return (ctx->uid == g_cfg.host_uid) ? 1 : 0;
+}
+
+static int
+deny_if_disallowed_write(void)
+{
+    if (!is_write_allowed_for_caller())
+        return -EACCES;
+    return 0;
+}
+
+static int
+deny_if_disallowed_open_writable(int flags)
+{
+    /* if caller is allowed writer, permit any open flags. */
+    if (is_write_allowed_for_caller())
+        return 0;
+
+    /* otherwise, enforce read-only opens. */
+    switch (flags & O_ACCMODE) {
+    case O_RDONLY:
+        return 0;
+    case O_WRONLY:
+    case O_RDWR:
+    default:
+        return -EACCES;
+    }
+}
+
 static void
 make_fullpath(char out[PATH_MAX], const char *path)
 {
@@ -238,15 +291,13 @@ static int
 afs_access(const char *path, int mask)
 {
     char full[PATH_MAX];
-    int res;
 
-    if (is_android_caller())
-        return 0;
+    if ((mask & W_OK) && !is_write_allowed_for_caller())
+        return -EACCES;
 
     make_fullpath(full, path);
-    res = access(full, mask);
 
-    if (res == -1)
+    if (access(full, mask) == -1)
         return -errno;
 
     return 0;
@@ -308,6 +359,11 @@ afs_mknod(const char *path, mode_t mode, dev_t rdev)
     char full[PATH_MAX];
     int res;
     int fd;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
 
@@ -346,6 +402,11 @@ afs_mkdir(const char *path, mode_t mode)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = mkdir(full, mode);
@@ -362,6 +423,11 @@ afs_unlink(const char *path)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = unlink(full);
@@ -377,6 +443,11 @@ afs_rmdir(const char *path)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = rmdir(full);
@@ -392,6 +463,11 @@ afs_symlink(const char *from, const char *to)
 {
     char full_to[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full_to, to);
     res = symlink(from, full_to);
@@ -410,6 +486,11 @@ afs_rename(const char *from, const char *to, unsigned int flags)
     char full_from[PATH_MAX];
     char full_to[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     if (flags != 0)
         return -EINVAL;
@@ -430,6 +511,11 @@ afs_link(const char *from, const char *to)
     char full_from[PATH_MAX];
     char full_to[PATH_MAX];
     int res;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full_from, from);
     make_fullpath(full_to, to);
@@ -446,13 +532,13 @@ afs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
 
     (void)fi;
 
-    if (is_android_caller()) {
-        debug("chmod no-op for android: %s mode=%o", path, mode);
-        return 0;
-    }
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = chmod(full, mode);
@@ -468,13 +554,13 @@ afs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
 
     (void)fi;
 
-    if (is_android_caller()) {
-        debug("chown no-op for android: %s uid=%u gid=%u", path, (unsigned)uid, (unsigned)gid);
-        return 0;
-    }
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = lchown(full, uid, gid);
@@ -490,8 +576,13 @@ afs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
     char full[PATH_MAX];
     int res;
+    int pol;
 
     (void)fi;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = truncate(full, size);
@@ -507,6 +598,11 @@ afs_open(const char *path, struct fuse_file_info *fi)
 {
     char full[PATH_MAX];
     int fd;
+    int pol;
+
+    pol = deny_if_disallowed_open_writable(fi->flags);
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     fd = open(full, fi->flags);
@@ -523,6 +619,11 @@ afs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     char full[PATH_MAX];
     int fd;
+    int pol;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     fd = open(full, fi->flags | O_CREAT, mode);
@@ -558,8 +659,13 @@ afs_write(const char *path, const char *buf, size_t size, off_t offset, struct f
 {
     ssize_t res;
     int fd;
+    int pol;
 
     (void)path;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     fd = (int)fi->fh;
     res = pwrite(fd, buf, size, offset);
@@ -609,8 +715,13 @@ afs_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info
 {
     char full[PATH_MAX];
     int res;
+    int pol;
 
     (void)fi;
+
+    pol = deny_if_disallowed_write();
+    if (pol != 0)
+        return pol;
 
     make_fullpath(full, path);
     res = utimensat(AT_FDCWD, full, tv, AT_SYMLINK_NOFOLLOW);
@@ -682,7 +793,7 @@ usage(const char *prog)
 {
     fprintf(stderr,
             "Usage:\n"
-            "  %s <mountpoint> -o backing=/abs/path[,disk_side=host|android,host_uid=1000,host_gid=1000,afs_debug=0]\n"
+            "  %s <mountpoint> -o backing=/abs/path[,disk_side=host|android|guest,host_uid=1000,host_gid=1000,afs_debug=0]\n"
             "    (optional) -o allow_other\n",
             prog);
 }
@@ -700,12 +811,12 @@ parse_disk_side(void)
         return 0;
     }
 
-    if (strcmp(s, "android") == 0) {
+    if (strcmp(s, "android") == 0 || strcmp(s, "guest") == 0) {
         g_cfg.disk_side = DISK_SIDE_ANDROID;
         return 0;
     }
 
-    fprintf(stderr, "Invalid disk_side: %s (expected host or android)\n", s);
+    fprintf(stderr, "Invalid disk_side: %s (expected host or android or guest)\n", s);
     return -1;
 }
 
@@ -773,7 +884,7 @@ main(int argc, char *argv[])
           (unsigned)ANDROID_UID,
           (unsigned)ANDROID_GID,
           (unsigned long)g_host_mntns_ino,
-          (g_cfg.disk_side == DISK_SIDE_ANDROID) ? "android" : "host");
+          (g_cfg.disk_side == DISK_SIDE_ANDROID) ? "android/guest" : "host");
 
     ret = fuse_main(args.argc, args.argv, &afs_ops, NULL);
 
